@@ -126,7 +126,7 @@ export const Home = () => {
   if (error) return <div className="error">{error}</div>;
 
    return (
-    <div className="bg-black">
+    <div className="bg-gradient-to-br from-blue-900 to-blue-950">
       <Navbar />
       <div className="pt-[68px] mt-2 z-0">
         <div className="mt-5 mb-5 font-bold text-4xl">Stock Listing</div>

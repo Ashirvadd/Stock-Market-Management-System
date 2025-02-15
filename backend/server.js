@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import puppeteer from "puppeteer";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
+import scrapeAndStoreStockData from "./real_time_data_fet.js";
 import readline from "readline/promises"; // Use the promises API
 import fs from "fs";
 import pkg from "pg"; // Import the entire 'pg' package
@@ -40,7 +41,6 @@ const con = new Client({
   password: process.env.PASSWORD, // Replace with your actual password
   database: process.env.DATABASE,
 });
-
 // Connect to the database
 con
   .connect()
@@ -77,7 +77,39 @@ const groq = new Groq({
 // });
 let emailid = process.env.EMAILID;
 let user_id = process.env.USER_ID;
+// Path to the .env file
+const envFilePath = ".env";
 
+// Helper function to get the current date in YYYY-MM-DD format
+const getCurrentDate = () => new Date().toISOString().split("T")[0];
+
+// Function to update the date in the .env file
+const updateEnvDate = async (newDate) => {
+  const envContent = fs.readFileSync(envFilePath, "utf-8");
+  const updatedContent = envContent.replace(
+    /LAST_CHECKED_DATE=.*/,
+    `LAST_CHECKED_DATE=${newDate}`
+  );
+  // console.log(newDate);
+  fs.writeFileSync(envFilePath, updatedContent, "utf-8");
+  console.log(`Updated LAST_CHECKED_DATE to ${newDate} in .env file.`);
+};
+const checkDateChange = () => {
+  const currentDate = getCurrentDate();
+  const lastCheckedDate = process.env.LAST_CHECKED_DATE;
+
+  if (lastCheckedDate !== currentDate) {
+    console.log(`Date has changed from ${lastCheckedDate} to ${currentDate}`);
+    // Perform your date-change logic here
+    console.log("Executing logic for the new date...");
+    scrapeAndStoreStockData();
+    // Update the .env file with the new date
+    updateEnvDate(currentDate);
+  } else {
+    console.log("Date has not changed. All good!");
+  }
+};
+checkDateChange();
 app.post("/formPost", async (req, res) => {
   try {
     // console.log("Received login request:", req.body); // Debug log
@@ -142,6 +174,14 @@ app.post("/signUpPost", async (req, res) => {
         error: "All fields (firstName, email, password) are required",
       });
     }
+    const nameRegex = /^[A-Za-z]+$/;
+    if (!nameRegex.test(firstName) || !nameRegex.test(lastName)) {
+      console.error("First name and last name should only contain alphabets");
+      return res.status(400).json({
+        error:
+          "First name and last name should only contain alphabets (no spaces or special characters)",
+      });
+    }
 
     // Check if the user already exists
     const checkQuery = "SELECT * FROM USERS WHERE email = $1";
@@ -184,21 +224,21 @@ app.post("/signUpPost", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-//api endpoint for getting username
-app.get("/api/username",async (req,res)=>{
-  try{
+//api endpoint for fetching username
+app.get("/api/username", async (req, res) => {
+  try {
     const query = `SELECT first_name FROM Users WHERE email= $1`;
-    const result = await con.query(query,[emailid]);
-     if (result.rows.length == 0) {
+    const result = await con.query(query, [emailid]);
+    if (result.rows.length == 0) {
       return res.status(400).json({ error: "User not found" });
     }
     console.log(result.rows);
     res.json(result.rows[0].first_name);
-  }catch(err){
-    console.error("Error in fetching username",error);
-    res.status(500).json({error:"username not found!"});
+  } catch (err) {
+    console.error("Error in fetching username", error);
+    res.status(500).json({ error: "username not found!" });
   }
-})
+});
 //api endpoint for finding total-balance
 app.get("/api/user/balance", async (req, res) => {
   try {
@@ -306,30 +346,32 @@ app.get("/api/get_stock", async (req, res) => {
 
 //api endpoint to get transaction infromtion
 app.get("/api/get_transaction", async (req, res) => {
-  // SQL query to fetch transactions with company name
+  //  const user_id = req.query.user_id; // Get user_id from query parameter
+
+  // SQL query to fetch transactions with company details
   const get_transaction_query = `
-          SELECT 
-          t.transaction_id,
-          t.user_id,
-          t.company_id,
-          c.company_name,
-          t.transaction_type,
-          t.quantity,
-          t.total_amount,
-          t.transaction_date
-      FROM 
-          transactions t
-      LEFT JOIN 
-          companies c
-      ON 
-          t.company_id = c.company_id
-      WHERE 
-          t.user_id = $1;
+    SELECT 
+      t.transaction_id,
+      t.user_id,
+      t.company_id,
+      c.company_name, -- Fetch company name if applicable
+      t.transaction_type,
+      t.quantity,
+      t.total_amount,
+      t.transaction_date,
+      CASE 
+        WHEN t.quantity = 0 THEN t.total_amount -- For deposits/withdrawals
+        ELSE t.quantity * t.total_amount       -- For stock transactions
+      END AS calculated_amount
+    FROM transactions t
+    LEFT JOIN companies c ON t.company_id = c.company_id -- Include company info if applicable
+    WHERE t.user_id = $1
+    ORDER BY t.transaction_date DESC; -- Sort by most recent transaction
   `;
 
   try {
     const result = await con.query(get_transaction_query, [user_id]);
-    console.log("Received transaction history:", result.rows);
+    // console.log("Received transaction history:", result.rows);
     res.json(result.rows);
   } catch (error) {
     console.error("Error in getting the transaction history:", error);
@@ -337,189 +379,6 @@ app.get("/api/get_transaction", async (req, res) => {
   }
 });
 
-// val this new endpoint for fetching real time company data
-async function scrapeAndStoreStockData() {
-  // List of stock symbols you want to scrape
-  const stockSymbols = {
-    AAPL: "NASDAQ",
-    MSFT: "NASDAQ",
-    GOOGL: "NASDAQ",
-    AMZN: "NASDAQ",
-    TSLA: "NASDAQ",
-    "BRK.B": "NYSE",
-    META: "NASDAQ",
-    NVDA: "NASDAQ",
-    JPM: "NYSE",
-    JNJ: "NYSE",
-    V: "NYSE",
-    PG: "NYSE",
-    UNH: "NYSE",
-    HD: "NYSE",
-    MA: "NYSE",
-    XOM: "NYSE",
-    KO: "NYSE",
-    PFE: "NYSE",
-    PEP: "NASDAQ",
-    CSCO: "NASDAQ",
-    MRK: "NYSE",
-    ABT: "NYSE",
-    CMCSA: "NASDAQ",
-    AVGO: "NASDAQ",
-    ADBE: "NASDAQ",
-    NFLX: "NASDAQ",
-    INTC: "NASDAQ",
-    VZ: "NYSE",
-    DIS: "NYSE",
-    WMT: "NYSE",
-    TMO: "NYSE",
-    NKE: "NYSE",
-    MCD: "NYSE",
-    BAC: "NYSE",
-    CRM: "NYSE",
-    QCOM: "NASDAQ",
-    ACN: "NYSE",
-    COST: "NASDAQ",
-    TXN: "NASDAQ",
-    WFC: "NYSE",
-    T: "NYSE",
-    LIN: "NYSE",
-    MDT: "NYSE",
-    AMGN: "NASDAQ",
-    HON: "NASDAQ",
-    IBM: "NYSE",
-    NEE: "NYSE",
-    C: "NYSE",
-    BA: "NYSE",
-    PM: "NYSE",
-    UNP: "NYSE",
-    RTX: "NYSE",
-    SCHW: "NYSE",
-    LOW: "NYSE",
-    ORCL: "NYSE",
-    INTU: "NASDAQ",
-    SPGI: "NYSE",
-    AMAT: "NASDAQ",
-    GS: "NYSE",
-    MS: "NYSE",
-    BMY: "NYSE",
-    DE: "NYSE",
-    PYPL: "NASDAQ",
-    CAT: "NYSE",
-    PLD: "NYSE",
-    MMM: "NYSE",
-    MO: "NYSE",
-    AXP: "NYSE",
-    DUK: "NYSE",
-    CL: "NYSE",
-    CCI: "NYSE",
-    ADP: "NASDAQ",
-    TGT: "NYSE",
-    CVX: "NYSE",
-    APD: "NYSE",
-    PGR: "NYSE",
-    SO: "NYSE",
-    COP: "NYSE",
-    NOW: "NYSE",
-    FIS: "NYSE",
-    HUM: "NYSE",
-    BKNG: "NASDAQ",
-    BLK: "NYSE",
-    ISRG: "NASDAQ",
-    ELV: "NYSE",
-    USB: "NYSE",
-    EQIX: "NASDAQ",
-    LRCX: "NASDAQ",
-    REGN: "NASDAQ",
-    ZTS: "NYSE",
-    ADI: "NASDAQ",
-    GE: "NYSE",
-    LMT: "NYSE",
-    KMB: "NYSE",
-    NSC: "NYSE",
-    GD: "NYSE",
-    ITW: "NYSE",
-    NOC: "NYSE",
-    OXY: "NYSE",
-    ECL: "NYSE",
-  };
-
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-
-  const stockData = [];
-
-  for (const [symbol, exchange] of Object.entries(stockSymbols)) {
-    try {
-      const url = `https://www.google.com/finance/quote/${symbol}:${exchange}`;
-      console.log(`Fetching data for ${symbol} from ${url}`);
-
-      await page.goto(url, { waitUntil: "domcontentloaded" });
-
-      // Extract stock data
-      const data = await page.evaluate(() => {
-        const name = document.querySelector(".zzDege")?.textContent || "N/A";
-        const price =
-          document
-            .querySelector(".YMlKec.fxKbKc")
-            ?.textContent.replace(/[$,]/g, "") || "0";
-        return { name, price };
-      });
-
-      stockData.push({ symbol, exchange, ...data });
-      console.log(`Scraped ${symbol}:`, data);
-    } catch (error) {
-      console.error(`Failed to scrape ${symbol}:`, error.message);
-    }
-  }
-
-  await browser.close();
-
-  const client = new Client(dbConfig);
-  await client.connect();
-
-  try {
-    for (const stock of stockData) {
-      const company_name = stock.name;
-      const ticker_symbol = stock.symbol;
-      let stock_price = parseFloat(stock.price);
-      // const total_shares = getRandomShares(1000, 10000);
-
-      const query = `
-  WITH existing_shares AS (
-    SELECT total_shares 
-    FROM Companies 
-    WHERE ticker_symbol = $2
-  )
-  INSERT INTO Companies (company_name, ticker_symbol, stock_price, total_shares)
-  VALUES (
-    $1, 
-    $2, 
-    $3, 
-    COALESCE((SELECT total_shares FROM existing_shares), $4)
-  )
-  ON CONFLICT (ticker_symbol) 
-  DO UPDATE SET 
-    company_name = EXCLUDED.company_name,
-    stock_price = EXCLUDED.stock_price;
-`;
-
-      const defaultTotalShares = 5000; // or whatever default value you want for new companies
-
-      await client.query(query, [
-        company_name,
-        ticker_symbol,
-        stock_price,
-        defaultTotalShares, // This will only be used for new insertions, not updates
-      ]);
-      console.log(`Inserted/Updated ${company_name} (${ticker_symbol})`);
-    }
-  } catch (error) {
-    console.error("Database operation failed:", error.message);
-  } finally {
-    await client.end();
-    console.log("Database connection closed.");
-  }
-}
 app.get("/api/real-time-data", async (req, res) => {
   try {
     const query = `
@@ -576,6 +435,24 @@ app.get("/api/all_companies", async (req, res) => {
     res.status(500).json({ error: "Error fetching company data" });
   }
 });
+
+//this api is to get particular transaction type
+app.get("/api/know_transaction/:type", async (req, res) => {
+  try {
+    const { type } = req.params;
+
+    const query = `SELECT * FROM transactions WHERE transaction_type=$1 AND user_id=$2`;
+
+    const result = await con.query(query, [type, user_id]);
+
+    console.log("Backend result:", result.rows); // Log the result to debug
+    res.json(result.rows); // Send the rows as JSON
+  } catch (error) {
+    console.error("Error fetching transaction information:", error);
+    res.status(404).json({ error: "Error fetching data" });
+  }
+});
+
 // this api endpoint is used for buying and selling stocks
 app.post("/api/trade", async (req, res) => {
   try {
@@ -586,18 +463,17 @@ app.post("/api/trade", async (req, res) => {
     const quantity = parseInt(quantity1);
     // Query for user's balance
     const getUserBalance = `
-      SELECT total_balance 
-      FROM users
-      WHERE user_id = $1;
+    SELECT total_balance 
+    FROM users
+    WHERE user_id = $1;
     `;
-
+    
     // Query for company details
     const getCompanyDetails = `
       SELECT company_id, ticker_symbol, stock_price, total_shares
       FROM companies
       WHERE company_name = $1;
     `;
-
     // Execute the queries
     const userBalance = await con.query(getUserBalance, [user_id]);
     const companyDetails = await con.query(getCompanyDetails, [company_name]);
@@ -632,7 +508,7 @@ app.post("/api/trade", async (req, res) => {
         INSERT INTO transactions (user_id,company_id,transaction_type,quantity,total_amount,transaction_date)
         VALUES($1, $2, $3, $4,$5,$6)
         `;
-
+        
         const values = [
           user_id,
           company_id,
@@ -653,7 +529,7 @@ app.post("/api/trade", async (req, res) => {
         quantity = stocks.quantity + $3,
         average_price = ((stocks.average_price * stocks.quantity) + ($3 *   $5)) / (stocks.quantity + $3);
         `;
-        console.log(user_id);
+        // console.log(user_id);
         await con.query(stock_query, [
           user_id,
           company_id,
@@ -661,6 +537,7 @@ app.post("/api/trade", async (req, res) => {
           company_name,
           stock_price,
         ]);
+        console.log("reached here");
         console.log(userTotalBalance);
         res.json(userTotalBalance);
       } else {
@@ -734,6 +611,7 @@ app.post("/api/trade", async (req, res) => {
       .json({ error: "Error in fetching the total balance of the user" });
   }
 });
+
 //function to extract real-time-news
 const scrapeNews = async () => {
   const url = "https://www.google.com/finance/?hl=en";
@@ -774,6 +652,7 @@ const scrapeNews = async () => {
     await browser.close();
   }
 };
+
 //api for current news
 app.get("/api/current_news", async (req, res) => {
   try {
@@ -785,6 +664,7 @@ app.get("/api/current_news", async (req, res) => {
     res.status(500).json({ error: "Error fetching in real time news" });
   }
 });
+
 app.get("/api/real-time-data/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -1035,7 +915,61 @@ app.post("/api/processPrompt", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
+//api endpoint for calculating profit and loss
+app.get("/api/profitloss", async (req, res) => {
+  try {
+    const query1 = `
+        SELECT SUM(quantity * average_price) AS net_investment
+        FROM stocks
+        WHERE user_id = $1
+    `;
+    const response1 = await con.query(query1, [user_id]);
+    const netinvested = response1.rows[0].net_investment;
+    // console.log(netinvested);
+    const query2 = `
+      SELECT SUM(stock_price * quantity) AS net_recieved
+      FROM companies,stocks 
+      WHERE stocks.company_id = companies.company_id AND user_id = $1
+    `;
+    const response2 = await con.query(query2, [user_id]);
+    const netrecieved = response2.rows[0].net_recieved;
+    if (netrecieved > netinvested) {
+      res.json({
+        status: "Profit",
+        amount: parseFloat((netrecieved - netinvested).toFixed(2)),
+      });
+    } else {
+      res.json({
+        status: "Loss",
+        amount: parseFloat((netinvested - netrecieved).toFixed(2)),
+      });
+    }
+  } catch (error) {
+    console.error({ error: "Error in fetching profit/loss" });
+    res.status(500).json({ error: "Error in fetching profit/loss" });
+  }
+});
+//api endpoint for finding profit/loss for particular companies
+app.get("/api/particularprofitloss", async (req, res) => {
+  try {
+    const query1 = `
+      SELECT stocks.company_id ,stocks.company_name,stocks.average_price,companies.stock_price,stocks.quantity
+      FROM stocks, companies
+      WHERE stocks.quantity > 0 AND user_id = $1 AND stocks.company_id = companies.company_id;
+    `;
+    const response1 = await con.query(query1, [user_id]);
+    console.log(response1.rows[0]);
+    res.json(response1.rows);
+  } catch (error) {
+    console.error({
+      error: "Error in fetching particular company profit/loss",
+    });
+    res
+      .status(500)
+      .json({ error: "Error in fetching particular company profit/loss" });
+  }
+});
+//api endpoint for historical symbol
 app.get("/api/historical/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;

@@ -15,6 +15,7 @@ import { error } from "console";
 import { stringify } from "querystring";
 import { exec } from "child_process";
 import PDFDocument from 'pdfkit';
+import { appendFile } from 'fs/promises';
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -162,7 +163,18 @@ app.post("/formPost", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
+app.post("/api/admin_login",async(req,res)=>{
+  try {
+    const {email,password} = req.body;
+    if(email != "jacobsebastian1995@gmail.com" || password != "1234"){
+      res.status(500).json({error:"Incorrect Credentials"});
+    }
+    res.status(200).json({message:"Admin Login successfull"});
+  } catch (error) {
+    console.error("Error in getting the password");
+    res.status(500).json({error:"Login not successful"});
+  }
+});
 app.post("/signUpPost", async (req, res) => {
   try {
     console.log("Sign-up form submitted:", req.body);
@@ -348,32 +360,37 @@ app.get("/api/get_stock", async (req, res) => {
 
 //api endpoint to get transaction infromtion
 app.get("/api/get_transaction", async (req, res) => {
-  //  const user_id = req.query.user_id; // Get user_id from query parameter
-
-  // SQL query to fetch transactions with company details
+  const { startDate, endDate } = req.query;
+  
+  // SQL query to fetch transactions with company details and date filtering
   const get_transaction_query = `
     SELECT 
       t.transaction_id,
       t.user_id,
       t.company_id,
-      c.company_name, -- Fetch company name if applicable
+      c.company_name,
       t.transaction_type,
       t.quantity,
       t.total_amount,
       t.transaction_date,
       CASE 
-        WHEN t.quantity = 0 THEN t.total_amount -- For deposits/withdrawals
-        ELSE t.quantity * t.total_amount       -- For stock transactions
+        WHEN t.quantity = 0 THEN t.total_amount
+        ELSE t.quantity * t.total_amount
       END AS calculated_amount
     FROM transactions t
-    LEFT JOIN companies c ON t.company_id = c.company_id -- Include company info if applicable
+    LEFT JOIN companies c ON t.company_id = c.company_id
     WHERE t.user_id = $1
-    ORDER BY t.transaction_date DESC; -- Sort by most recent transaction
+    ${startDate && endDate ? `AND t.transaction_date BETWEEN $2 AND $3` : ''}
+    ORDER BY t.transaction_date DESC;
   `;
 
   try {
-    const result = await con.query(get_transaction_query, [user_id]);
-    // console.log("Received transaction history:", result.rows);
+    const queryParams = [user_id];
+    if (startDate && endDate) {
+      queryParams.push(startDate, endDate);
+    }
+
+    const result = await con.query(get_transaction_query, queryParams);
     res.json(result.rows);
   } catch (error) {
     console.error("Error in getting the transaction history:", error);
@@ -666,7 +683,6 @@ app.get("/api/current_news", async (req, res) => {
     res.status(500).json({ error: "Error fetching in real time news" });
   }
 });
-
 app.get("/api/real-time-data/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -996,39 +1012,190 @@ app.get("/api/historical/:symbol", async (req, res) => {
   }
 });
 
+// Helper function to format transaction types
+function formatTransactionType(type) {
+  const types = {
+    'Buy_stock': 'Buy',
+    'Sell_stock': 'Sell',
+    'deposited': 'Deposit',
+    'withdrawn': 'Withdraw'
+  };
+  return types[type] || type;
+}
+
+// Helper function to draw stat boxes
+function drawStatsBox(doc, label, value, x, y) {
+  const boxWidth = (doc.page.width - 150) / 2;
+  const boxHeight = 60;
+
+  doc.rect(x, y, boxWidth, boxHeight)
+     .fillAndStroke('#f8fafc', '#1a237e');
+  
+  doc.fontSize(12)
+     .font('Helvetica')
+     .fillColor('#666666')
+     .text(label, x + 15, y + 15);
+  
+  doc.fontSize(16)
+     .font('Helvetica-Bold')
+     .fillColor('#1a237e')
+     .text(value, x + 15, y + 35);
+}
+
+// Helper function to create formatted tables
+function createPDFTable(doc, table, startY) {
+  const tableTop = startY || doc.y;
+  const cellPadding = 10;
+  const headerColor = '#1a237e';
+  const borderColor = '#e5e7eb';
+  const columnWidth = (doc.page.width - 100) / table.headers.length;
+
+  // Draw header background
+  doc.rect(50, tableTop - 5, doc.page.width - 100, 30)
+     .fill('#1a237e');
+
+  // Draw headers
+  doc.font('Helvetica-Bold')
+     .fontSize(11)
+     .fillColor('#ffffff');
+
+  table.headers.forEach((header, i) => {
+    doc.text(
+      header,
+      50 + (columnWidth * i) + cellPadding,
+      tableTop,
+      { width: columnWidth - (cellPadding * 2), align: 'left' }
+    );
+  });
+
+  // Draw rows
+  let rowTop = tableTop + 30;
+  doc.font('Helvetica')
+     .fontSize(10)
+     .fillColor('#000000');
+
+  table.rows.forEach((row, i) => {
+    // Add new page if needed
+    if (rowTop > doc.page.height - 50) {
+      doc.addPage();
+      rowTop = 50;
+      
+      // Redraw headers on new page
+      doc.rect(50, rowTop - 5, doc.page.width - 100, 30)
+         .fill('#1a237e');
+      
+      doc.font('Helvetica-Bold')
+         .fontSize(11)
+         .fillColor('#ffffff');
+      
+      table.headers.forEach((header, i) => {
+        doc.text(
+          header,
+          50 + (columnWidth * i) + cellPadding,
+          rowTop,
+          { width: columnWidth - (cellPadding * 2), align: 'left' }
+        );
+      });
+      
+      rowTop += 30;
+      doc.font('Helvetica')
+         .fontSize(10)
+         .fillColor('#000000');
+    }
+
+    // Draw row background
+    doc.rect(50, rowTop - 5, doc.page.width - 100, 25)
+       .fill(i % 2 === 0 ? '#f8fafc' : '#ffffff');
+
+    // Draw row border
+    doc.rect(50, rowTop - 5, doc.page.width - 100, 25)
+       .strokeColor(borderColor)
+       .stroke();
+
+    // Draw row content with explicit black color
+    row.forEach((cell, j) => {
+      doc.fillColor('#000000')
+         .text(
+           cell,
+           50 + (columnWidth * j) + cellPadding,
+           rowTop,
+           { width: columnWidth - (cellPadding * 2), align: 'left' }
+         );
+    });
+
+    rowTop += 25;
+  });
+
+  return rowTop;
+}
+
 // API endpoint for generating transaction report
 app.get("/api/generate-report", async (req, res) => {
   try {
-    // Fetch transaction data
-    const transactionQuery = `
-      SELECT 
-        t.transaction_type,
-        c.company_name,
-        t.quantity,
-        t.total_amount as money_involved,
-        to_char(t.transaction_date, 'DD/MM/YYYY') as formatted_date
-      FROM transactions t
-      LEFT JOIN companies c ON t.company_id = c.company_id
-      WHERE t.user_id = $1
-      ORDER BY t.transaction_date DESC
-    `;
+    // Fetch all required data
+    const queries = {
+      transactions: `
+        SELECT 
+          t.transaction_type,
+          c.company_name,
+          t.quantity,
+          t.total_amount as money_involved,
+          to_char(t.transaction_date, 'DD/MM/YYYY') as formatted_date
+        FROM transactions t
+        LEFT JOIN companies c ON t.company_id = c.company_id
+        WHERE t.user_id = $1
+        ORDER BY t.transaction_date DESC
+      `,
+      stocks: `
+        SELECT 
+          s.company_name,
+          s.quantity,
+          s.average_price,
+          c.stock_price
+        FROM stocks s
+        JOIN companies c ON s.company_id = c.company_id
+        WHERE s.user_id = $1 AND s.quantity > 0
+      `,
+      user: `
+        SELECT 
+          first_name, 
+          last_name, 
+          email, 
+          CAST(total_balance AS FLOAT) as total_balance
+        FROM users
+        WHERE user_id = $1
+      `
+    };
 
-    const stockQuery = `
-      SELECT 
-        s.company_name,
-        s.quantity,
-        s.average_price    
-      FROM stocks s
-      WHERE s.user_id = $1 AND s.quantity > 0
-    `;
-
-    const [transactionResult, stockResult] = await Promise.all([
-      con.query(transactionQuery, [user_id]),
-      con.query(stockQuery, [user_id])
+    // Execute all queries in parallel
+    const [transactionResult, stockResult, userResult] = await Promise.all([
+      con.query(queries.transactions, [user_id]),
+      con.query(queries.stocks, [user_id]),
+      con.query(queries.user, [user_id])
     ]);
 
+    // Check if user exists
+    if (!userResult.rows[0]) {
+      throw new Error('User not found');
+    }
+
+    const user = userResult.rows[0];
+    const balance = parseFloat(user.total_balance) || 0;
+
     // Create PDF document
-    const doc = new PDFDocument();
+    const doc = new PDFDocument({
+      size: 'A4',
+      margins: { top: 50, bottom: 50, left: 50, right: 50 },
+      bufferPages: true
+    });
+
+    // Handle errors in the PDF stream
+    doc.on('error', (err) => {
+      console.error('Error in PDF generation:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error generating PDF' });
+      }
+    });
     
     // Set response headers
     res.setHeader('Content-Type', 'application/pdf');
@@ -1037,71 +1204,352 @@ app.get("/api/generate-report", async (req, res) => {
     // Pipe the PDF to the response
     doc.pipe(res);
 
-    // Add content to PDF
-    doc.fontSize(20).text('Stock Trading Report', { align: 'center' });
-    doc.moveDown();
+    // Add header
+    doc.rect(0, 0, doc.page.width, 120).fill('#1a237e');
+    doc.fontSize(30)
+       .font('Helvetica-Bold')
+       .fillColor('#ffffff')
+       .text('Stock Trading Report', 50, 50, { align: 'center' });
     
-    // Add transaction table
-    doc.fontSize(16).text('Transaction History');
-    doc.moveDown();
-    
-    // Define table layout
-    const tableTop = 150;
-    let tableRow = tableTop;
-    
-    // Add table headers
-    doc.fontSize(12);
-    doc.text('Type', 50, tableRow);
-    doc.text('Company', 150, tableRow);
-    doc.text('Quantity', 250, tableRow);
-    doc.text('Amount', 350, tableRow);
-    doc.text('Date', 450, tableRow);
-    
-    tableRow += 20;
+    // Add report date
+    doc.fontSize(12)
+       .font('Helvetica')
+       .text(`Generated on ${new Date().toLocaleDateString('en-US', { 
+         weekday: 'long', 
+         year: 'numeric', 
+         month: 'long', 
+         day: 'numeric',
+         hour: '2-digit',
+         minute: '2-digit'
+       })}`, 50, 85, { align: 'center' });
 
-    // Add transaction rows
-    transactionResult.rows.forEach(tx => {
-      const color = tx.transaction_type === 'Buy_stock' ? '#0000FF' : 
-                   tx.transaction_type === 'Sell_stock' ? '#FF0000' : 
-                   tx.transaction_type === 'deposited' ? '#00FF00' : '#FFA500';
-                   
-      const displayType = tx.transaction_type === 'Buy_stock' ? 'Buy' :
-                         tx.transaction_type === 'Sell_stock' ? 'Sell' :
-                         tx.transaction_type === 'deposited' ? 'Deposit' : 'Withdraw';
+    // Add user info in a styled box
+    doc.rect(50, 140, doc.page.width - 100, 100)
+       .fillAndStroke('#f3f4f6', '#1a237e');
+    
+    doc.fontSize(16)
+       .font('Helvetica-Bold')
+       .fillColor('#1a237e')
+       .text('Investor Profile', 70, 155);
+    
+    doc.fontSize(12)
+       .font('Helvetica')
+       .fillColor('#000000')
+       .text(`Name: ${user.first_name} ${user.last_name}`, 70, 180)
+       .text(`Email: ${user.email}`, 70, 200)
+       .text(`Current Balance: $${balance.toFixed(2)}`, 70, 220);
 
-      doc.fillColor(color).text(displayType, 50, tableRow);
-      doc.fillColor('black').text(tx.company_name || '-', 150, tableRow);
-      doc.text(tx.quantity?.toString() || '-', 250, tableRow);
-      doc.text(`$${tx.money_involved}`, 350, tableRow);
-      doc.text(tx.formatted_date, 450, tableRow);
-      
-      tableRow += 20;
-      
-      // Add new page if needed
-      if (tableRow > 700) {
-        doc.addPage();
-        tableRow = 50;
-      }
-    });
+    // Portfolio Summary Section
+    doc.fontSize(20)
+       .font('Helvetica-Bold')
+       .fillColor('#1a237e')
+       .text('Portfolio Summary', 50, 270);
 
-    // Add current holdings
+    // Add decorative line
+    doc.moveTo(50, 295)
+       .lineTo(doc.page.width - 50, 295)
+       .strokeColor('#1a237e')
+       .lineWidth(2)
+       .stroke();
+
+    // Calculate portfolio statistics
+    const totalValue = stockResult.rows.reduce((sum, stock) => {
+      const quantity = parseFloat(stock.quantity) || 0;
+      const price = parseFloat(stock.stock_price) || 0;
+      return sum + (quantity * price);
+    }, 0);
+
+    // Add portfolio statistics in a grid
+    const statsStartY = 320;
+    drawStatsBox(doc, 'Total Portfolio Value', `$${totalValue.toFixed(2)}`, 50, statsStartY);
+    drawStatsBox(doc, 'Number of Stocks', stockResult.rows.length.toString(), doc.page.width/2, statsStartY);
+
+    // Current Holdings Table
+    const holdingsTable = {
+      headers: ['Company', 'Quantity', 'Avg. Price', 'Current Price', 'Total Value'],
+      rows: stockResult.rows.map(stock => {
+        const quantity = parseFloat(stock.quantity) || 0;
+        const avgPrice = parseFloat(stock.average_price) || 0;
+        const currentPrice = parseFloat(stock.stock_price) || 0;
+        return [
+          stock.company_name,
+          quantity.toString(),
+          `$${avgPrice.toFixed(2)}`,
+          `$${currentPrice.toFixed(2)}`,
+          `$${(quantity * currentPrice).toFixed(2)}`
+        ];
+      })
+    };
+
+    createPDFTable(doc, holdingsTable, statsStartY + 130);
+
+    // Transaction History on new page
     doc.addPage();
-    doc.fontSize(16).text('Current Holdings');
-    doc.moveDown();
     
-    stockResult.rows.forEach(stock => {
-      doc.fontSize(12).text(
-        `${stock.company_name}: ${stock.quantity} shares at average price $${stock.average_price}`
-      );
-      doc.moveDown();
-    });
+    // Add decorative header for transactions page
+    doc.rect(0, 0, doc.page.width, 80).fill('#1a237e');
+    doc.fontSize(24)
+       .font('Helvetica-Bold')
+       .fillColor('#ffffff')
+       .text('Transaction History', 50, 30, { align: 'center' });
+
+    // Transaction summary boxes
+    const totalBuy = transactionResult.rows
+      .filter(tx => tx.transaction_type === 'Buy_stock')
+      .reduce((sum, tx) => sum + parseFloat(tx.money_involved), 0);
+    
+    const totalSell = transactionResult.rows
+      .filter(tx => tx.transaction_type === 'Sell_stock')
+      .reduce((sum, tx) => sum + parseFloat(tx.money_involved), 0);
+
+    drawStatsBox(doc, 'Total Buy Amount', `$${totalBuy.toFixed(2)}`, 50, 100);
+    drawStatsBox(doc, 'Total Sell Amount', `$${totalSell.toFixed(2)}`, doc.page.width/2, 100);
+
+    // Transaction table with enhanced styling
+    const transactionTable = {
+      headers: ['Date', 'Type', 'Company', 'Quantity', 'Amount'],
+      rows: transactionResult.rows.map(tx => [
+        tx.formatted_date,
+        formatTransactionType(tx.transaction_type),
+        tx.company_name || '-',
+        tx.quantity?.toString() || '-',
+        `$${parseFloat(tx.money_involved).toFixed(2)}`
+      ])
+    };
+
+    createPDFTable(doc, transactionTable, 200);
+
+    // Add page numbers
+    const pages = doc.bufferedPageRange();
+    for (let i = 0; i < pages.count; i++) {
+      doc.switchToPage(i);
+      doc.fontSize(10)
+         .fillColor('#666666')
+         .text(
+           `Page ${i + 1} of ${pages.count}`,
+           50,
+           doc.page.height - 50,
+           { align: 'center' }
+         );
+    }
 
     // Finalize PDF
     doc.end();
 
   } catch (error) {
     console.error('Error generating report:', error);
-    res.status(500).json({ error: 'Failed to generate report' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to generate report' });
+    }
+  }
+});
+
+// Admin API Endpoints
+
+// Get all users
+app.get("/api/admin/users", async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        user_id,
+        CONCAT(first_name, ' ', last_name) as name,
+        email,
+        total_balance as balance
+      FROM users
+      WHERE email != 'jacobsebastian1995@gmail.com'
+      ORDER BY first_name
+    `;
+    const result = await con.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+
+// Get all companies
+app.get("/api/admin/companies", async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        company_id,
+        company_name,
+        ticker_symbol as symbol,
+        stock_price,
+        total_shares
+      FROM companies
+      ORDER BY company_name
+    `;
+    const result = await con.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching companies:", error);
+    res.status(500).json({ error: "Failed to fetch companies" });
+  }
+});
+
+// Add this constant near other constants
+const BLACKLIST_FILE = path.join(__dirname, 'blacklisted_emails.txt');
+
+// Replace the delete user endpoint
+app.delete("/api/admin/users/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const { email } = req.body;
+  
+  try {
+    // Start a transaction
+    await con.query('BEGIN');
+
+    // Save email to blacklist file
+    await appendFile(BLACKLIST_FILE, `${email}\n`);
+
+    // Delete user's stocks
+    await con.query(
+      'DELETE FROM stocks WHERE user_id = $1',
+      [userId]
+    );
+
+    // Delete user's transactions
+    await con.query(
+      'DELETE FROM transactions WHERE user_id = $1',
+      [userId]
+    );
+
+    // Finally, delete the user
+    await con.query(
+      'DELETE FROM users WHERE user_id = $1',
+      [userId]
+    );
+
+    // Commit the transaction
+    await con.query('COMMIT');
+
+    res.json({ message: "User deleted successfully" });
+  } catch (error) {
+    // Rollback in case of error
+    await con.query('ROLLBACK');
+    console.error("Error deleting user:", error);
+    res.status(500).json({ error: "Failed to delete user" });
+  }
+});
+
+// Delete company
+app.delete("/api/admin/companies/:companyId", async (req, res) => {
+  const { companyId } = req.params;
+  
+  try {
+    // Start a transaction
+    await con.query('BEGIN');
+
+    // Delete company's stocks
+    await con.query(
+      'DELETE FROM stocks WHERE company_id = $1',
+      [companyId]
+    );
+
+    // Delete company's transactions
+    await con.query(
+      'DELETE FROM transactions WHERE company_id = $1',
+      [companyId]
+    );
+
+    // Finally, delete the company
+    await con.query(
+      'DELETE FROM companies WHERE company_id = $1',
+      [companyId]
+    );
+
+    // Commit the transaction
+    await con.query('COMMIT');
+
+    res.json({ message: "Company deleted successfully" });
+  } catch (error) {
+    // Rollback in case of error
+    await con.query('ROLLBACK');
+    console.error("Error deleting company:", error);
+    res.status(500).json({ error: "Failed to delete company" });
+  }
+});
+
+// Add new company
+app.post("/api/admin/companies", async (req, res) => {
+  const { companyName, symbol, stockPrice, totalShares } = req.body;
+  
+  try {
+    // Validate input
+    if (!companyName || !symbol || !stockPrice || !totalShares) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    // Check if company with same symbol already exists
+    const existingCompany = await con.query(
+      'SELECT * FROM companies WHERE ticker_symbol = $1',
+      [symbol]
+    );
+
+    if (existingCompany.rows.length > 0) {
+      return res.status(400).json({ error: "Company with this symbol already exists" });
+    }
+
+    // Insert new company
+    const query = `
+      INSERT INTO companies (company_name, ticker_symbol, stock_price, total_shares)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *
+    `;
+    
+    const result = await con.query(query, [companyName, symbol, stockPrice, totalShares]);
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Error adding company:", error);
+    res.status(500).json({ error: "Failed to add company" });
+  }
+});
+
+// Edit company
+app.put("/api/admin/companies/:companyId", async (req, res) => {
+  const { companyId } = req.params;
+  const { companyName, symbol, stockPrice, totalShares } = req.body;
+  
+  try {
+    // Validate input
+    if (!companyName || !symbol || !stockPrice || !totalShares) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    // Check if company exists
+    const existingCompany = await con.query(
+      'SELECT * FROM companies WHERE company_id = $1',
+      [companyId]
+    );
+
+    if (existingCompany.rows.length === 0) {
+      return res.status(404).json({ error: "Company not found" });
+    }
+
+    // Check if symbol is already used by another company
+    const symbolCheck = await con.query(
+      'SELECT * FROM companies WHERE ticker_symbol = $1 AND company_id != $2',
+      [symbol, companyId]
+    );
+
+    if (symbolCheck.rows.length > 0) {
+      return res.status(400).json({ error: "Symbol is already in use by another company" });
+    }
+
+    // Update company
+    const query = `
+      UPDATE companies 
+      SET company_name = $1, ticker_symbol = $2, stock_price = $3, total_shares = $4
+      WHERE company_id = $5
+      RETURNING *
+    `;
+    
+    const result = await con.query(query, [companyName, symbol, stockPrice, totalShares, companyId]);
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error updating company:", error);
+    res.status(500).json({ error: "Failed to update company" });
   }
 });
 

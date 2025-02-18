@@ -8,8 +8,9 @@ import Funds from "./Pages/Funds";
 import Porfolio from "./Pages/Portfolio";
 import Trade from "./Pages/Trade";
 import Chatbot from "./Pages/chatbot.jsx";
-
+import AdminLogin from "./Pages/AdminLogin";
 import "./App.css";
+import Admin from "./Pages/Admin.jsx";
 // import { Home } from '@mui/icons-material';
 function App() {
   return (
@@ -24,6 +25,8 @@ function App() {
           <Route path="/portfolio" element={<Porfolio />} />
           <Route path="/trade" element={<Trade />} />
           <Route path="/chatbot" element={<Chatbot />} />
+          <Route path="/admin" element={<Admin />} />
+          <Route path="/admin-login" element={<AdminLogin />} />
         </Routes>
       </div>
     </Router>

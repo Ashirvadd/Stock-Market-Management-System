@@ -2,6 +2,12 @@
 
 A modern web application for real-time stock trading and portfolio management built with React.js and Node.js. The platform offers live market data through web scraping and features a sleek, responsive interface using Tailwind CSS and Aceternity UI components.
 
+<img width="1420" height="720" alt="Image" src="https://github.com/user-attachments/assets/798efe70-e4c6-436e-a576-fb6797b8e23d" />
+<img width="1420" height="641" alt="Image" src="https://github.com/user-attachments/assets/dd0e2300-7b44-435b-a1e8-9d7a17e83379" />
+<img width="1656" height="497" alt="Image" src="https://github.com/user-attachments/assets/ebed8889-6f1e-4fe4-8741-16fb0968a088" />
+<img width="1406" height="659" alt="Image" src="https://github.com/user-attachments/assets/6840a871-e5b3-4a04-929e-6cf1730428d5" />
+<img width="1425" height="622" alt="Image" src="https://github.com/user-attachments/assets/6f99b104-cf48-49ac-bf6b-e7a02b1c7781" />
+
 ## Features Implemented
 
 - User Authentication System
